@@ -1,181 +1,260 @@
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum TokenType {
-  IDENT,
-  LITERAL,
-  ASSIGN,
-  SEMICOLON,
-  NEWLINE,
-  LBRACK,
-  RBRACK,
-  ILLEGAL,
-  FILEEND
+#define INITIAL_ALLOC_SIZE 4096
+
+/*
+* Allocator
+* Most basic possible linear allocator to store data while parsing the input
+*/
+struct Allocator {
+  uint8_t* buffer; // points to start of memory block
+  size_t cap; // capacity of allocator
+  size_t offset; // current index into memory block
 };
 
-struct Token {
-  enum TokenType type;
-  const char* literal;
-};
-
-struct Token new_token(enum TokenType type, const char* literal) {
-  struct Token tok = { type, literal };
-  return tok;
+void allocator_init(struct Allocator *allocator) {
+  allocator->buffer = malloc(INITIAL_ALLOC_SIZE);
+  allocator->cap = INITIAL_ALLOC_SIZE;
+  allocator->offset = 0;
 }
 
-struct Lexer {
-  const char* input;
+void* allocator_alloc(struct Allocator *allocator, size_t size) {
+  // Align the current offset to the next multiple of the alignment
+  size_t alignment = 8;
+  size_t aligned_offset = (allocator->offset + (alignment - 1)) & ~(alignment - 1);
+
+  // Check for capacity
+  if (allocator->offset + size > allocator->cap) {
+    return NULL; // failed to alloc
+  }
+  // Start of memory free
+  void *ptr = allocator->buffer + aligned_offset;
+  // Offset moves to size
+  allocator->offset = aligned_offset + size;
+  return ptr;
+}
+
+// All memory is void and free to be overriden
+void allocator_reset(struct Allocator *allocator) {
+  allocator->offset = 0;
+}
+
+void allocator_free(struct Allocator *allocator) {
+  free(allocator->buffer);
+  allocator->buffer = NULL;
+  allocator->cap = 0;
+  allocator->offset = 0;
+}
+
+/*
+* INI Parser
+*/
+struct IniEntry {
+  const char *key;
+  const char *val;
+  const char *section;
+};
+
+struct Parser {
+  // Parser state
+  const char *input;
   int input_len;
-  int position; // Position pointing to current char
+  int position;      // Position pointing to current char
   int read_position; // Reading position in input
-  char ch; // Current char
+  char ch;           // Current char
+  char* section_name; // Current section name
+
+  // Parsed data
+  int entry_len;
+  struct IniEntry *entries;
 };
 
-struct Lexer new_lexer(const char* input, int input_len) {
-  struct Lexer lexer = { input, input_len, 0, 0, input[0] };
-  return lexer;
+struct IniEntry new_ini_entry(const char *key, const char *val, char* section) {
+  struct IniEntry entry = {
+    .key = key,
+    .val = val,
+    .section = section
+  };
+  return entry;
 }
 
-int is_letter(char ch) {
- return ('a' <= ch && ch <= 'z') || ('A' <= ch && ch <= 'Z') || ch == '_';
+struct Parser new_parser(const char *input, int input_len, struct Allocator *allocator) {
+  struct IniEntry *entries = allocator_alloc(allocator, 1024);
+  struct Parser parser = {input, input_len, 0, 1, input[0], 0, 0, entries };
+  return parser;
 }
 
-int is_digit(char ch) {
-  return '0' <= ch && ch <= '9';
+int is_digit(char ch) { return '0' <= ch && ch <= '9'; }
+int is_valid_char(char ch) {
+  return ('a' <= ch && ch <= 'z') || ('A' <= ch && ch <= 'Z') || ch == '_' || is_digit(ch);
 }
 
 
-void read_char(struct Lexer* lexer) {
+void read_char(struct Parser *parser) {
   // Check if at end of input
-  if(lexer->read_position >= lexer->input_len) {
-    lexer->ch = 0; // EOF
+  if (parser->read_position >= parser->input_len) {
+    parser->ch = '0'; // EOF
   } else {
     // Read the current char
-    lexer->ch = lexer->input[lexer->read_position];
+    parser->ch = parser->input[parser->read_position];
   }
   // Move position to last read position
-  lexer->position = lexer->read_position;
+  parser->position = parser->read_position;
   // Move our read position to the next char
-  lexer->read_position += 1;
+  parser->read_position += 1;
 }
 
-char* read_literal(struct Lexer* lexer) {
-  int pos = lexer->position;
+char *read_literal(struct Parser *parser, struct Allocator *allocator) {
+  int pos = parser->position;
 
   // TODO: No int type for now
-  while(is_letter(lexer->ch) || is_digit(lexer->ch)) {
-    read_char(lexer);
+  while (is_valid_char(parser->ch)) {
+    read_char(parser);
   }
 
-  // TODO: Allocation
-  int substr_len = lexer->position - pos;
-  char *literal = malloc(substr_len + 1);
+  int substr_len = parser->position - pos;
+  char *literal = allocator_alloc(allocator, substr_len + 1);
 
-  // Copy string literal slice from input
-  memcpy(literal, lexer->input + lexer->position, substr_len);
-
-  // NUL termination of str
+  strncpy(literal, parser->input + pos, substr_len);
   literal[substr_len] = '\0';
-
-  printf("Literal: %s\n", literal);
 
   return literal;
 }
 
-void skip_whitespace(struct Lexer *l) {
-  while (l->ch == ' ' || l->ch == '\t' || l->ch == '\r') {
-    read_char(l);
+void skip_to_next_line(struct Parser *parser) {
+  while (parser->ch !='\n') {
+    if (parser->ch == '0') exit(EXIT_FAILURE);
+    read_char(parser);
   }
 }
 
-
-struct Token next_token(struct Lexer* lexer) {
-  struct Token tok = { 0, 0};
-
-  skip_whitespace(lexer);
-
-  printf("Current char: %c\n", lexer->ch);
-
-  switch (lexer->ch) {
-    case '[':
-      tok = new_token(LBRACK, "[");
-      break;
-    case ']':
-      tok = new_token(RBRACK, "]");
-      break;
-    case '=':
-      tok = new_token(ASSIGN, "=");
-      break;
-    case ';':
-      tok = new_token(SEMICOLON, ";");
-      break;
-    case '\n':
-      tok = new_token(NEWLINE, "");
-      break;
-    case '0':
-      tok = new_token(FILEEND, "");
-      break;
-    default:
-      if(is_letter(lexer->ch)) {
-        tok.literal = read_literal(lexer);
-        tok.type = LITERAL;
-        return tok;
-      } else {
-        printf("Illegal token, %s", &lexer->ch);
-        tok = new_token(ILLEGAL, &lexer->ch);
-      }
+void skip_whitespace(struct Parser *parser) {
+  while (parser->ch == ' ' || parser->ch == '\t' || parser->ch == '\r' || parser->ch == '\n') {
+    read_char(parser);
   }
-
-  read_char(lexer);
-  return tok;
 }
 
+void parse_section_name(struct Parser *parser, struct Allocator *allocator) {
+  // Lexer is at LBRACK move to next char, and read literal
+  read_char(parser);
+  assert(is_valid_char(parser->ch));
 
-// next ...
-// expect ...
+  parser->section_name = read_literal(parser, allocator);
 
-// void parse_tokens(const char* input) {
-//   int input_len = strlen(input);
-//   struct Lexer lexer = new_lexer(input, input_len);
-//
-// }
+  assert(parser->ch == ']');
+  // Move past closing bracket
+  read_char(parser);
+}
 
-void test_next_token(void) {
-    const char* input = "[section]\nkey=value\n";
-    struct Lexer lexer = new_lexer(input, strlen(input));
+void parse_key_value(struct Parser *parser, struct Allocator *allocator) {
+  const char *key = read_literal(parser, allocator);
+  skip_whitespace(parser);
+  // Move past assignment oper
+  assert(parser->ch == '=');
+  read_char(parser);
+  skip_whitespace(parser);
 
-  printf("Lexer current char: %s\n", &lexer.ch);
+  const char *val = read_literal(parser, allocator);
 
-    struct Token tests[] = {
-        {LBRACK, "["},
-        {LITERAL, "section"},
-        {RBRACK, "]"},
-        {NEWLINE, ""},
-        {LITERAL, "key"},
-        {ASSIGN, "="},
-        {LITERAL, "value"},
-        {NEWLINE, "\n"},
-        {FILEEND, ""}
-    };
+  struct IniEntry entry = new_ini_entry(key, val, parser->section_name);
 
-    for (int i = 0; i < (int)sizeof(tests) / (int)sizeof(tests[0]); i++) {
-        struct Token tok = next_token(&lexer);
-        if (tok.type != tests[i].type) {
-            fprintf(stderr, "Test %d failed: Expected type=%d, got type=%d\n", i, tests[i].type, tok.type);
-            assert(0);
-        }
-        if (strcmp(tok.literal, tests[i].literal) != 0) {
-            fprintf(stderr, "Test %d failed: Expected literal='%s', got literal='%s'\n", i, tests[i].literal, tok.literal);
-            assert(0);
-        }
-        printf("Test %d passed: type=%d, literal=%s\n", i, tok.type, tok.literal);
+  parser->entries[parser->entry_len] = entry;
+  parser->entry_len += 1;
+}
+
+int parse_next(struct Parser *parser, struct Allocator *allocator) {
+  skip_whitespace(parser);
+
+  switch (parser->ch) {
+  case '[':
+    parse_section_name(parser, allocator);
+    break;
+  case ';':
+    // Consume semi colon and skip to next non-whitespace/new line
+    skip_to_next_line(parser);
+    break;
+  case '0':
+    return 0; // No next values to parse
+    break;
+  default:
+    if (is_valid_char(parser->ch)) {
+        parse_key_value(parser, allocator);
+    } else {
+      printf("Illegal token");
+      exit(EXIT_FAILURE);
     }
+  }
+
+  read_char(parser);
+  return 1;
 }
 
-int main(void) {
-    test_next_token();
-    printf("All tests passed!\n");
-    return 0;
+char *read_file(const char* path, struct Allocator* allocator) {
+  FILE *file = fopen(path, "rb");
+  if(file == NULL) {
+    perror("File is null\n");
+    exit(1);
+  }
+
+  if (fseek(file, 0, SEEK_END) != 0) {
+    perror("Error seeking to end of file");
+    fclose(file);
+    return NULL;
+  }
+
+  long filesize = ftell(file);
+  if(filesize == -1) {
+    perror("Error getting filesize");
+    fclose(file);
+    return NULL;
+  }
+
+  rewind(file);
+
+
+  char *buf = allocator_alloc(allocator, filesize + 1);
+  if(!buf) {
+    perror("No size left in arena");
+    fclose(file);
+    return NULL;
+  }
+
+  size_t bytes_read = fread(buf, 1, filesize, file);
+  if(bytes_read <= 0) {
+    printf("Error: did not read bytes");
+    exit(1);
+  }
+
+  buf[filesize] = '\0';
+  fclose(file);
+
+  return buf;
+}
+
+int main(int argc, char *argv[]) {
+  if(argc != 2) {
+    printf("Usage: inip <path to ini file>\n");
+    exit(1);
+  }
+
+  const char *file_path = argv[1];
+
+  struct Allocator allocator = { 0, 0, 0 };
+  allocator_init(&allocator);
+  const char *ini_input = read_file(file_path, &allocator);
+
+  struct Parser parser = new_parser(ini_input, strlen(ini_input), &allocator);
+
+  while(parse_next(&parser, &allocator)) { }
+
+  for(int i = 0; i < parser.entry_len; i++) {
+    struct IniEntry *ent = &parser.entries[i];
+    printf("Key: %s, Value: %s, Section: %s\n", ent->key, ent->val, ent->section);
+  }
+
+  return 0;
 }
