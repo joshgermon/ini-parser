@@ -1,20 +1,6 @@
 # INI Parser
 
-## Overview
-
-Simple .ini config file parser to use for configuration in C programs
-
-## Usage
-
-TBD
-
-## Supported Features
-
-Note: This parser is not designed to be to spec, it won't aim to match the ini specification perfectly. i.e it does not support nested sections.
-
-- [ ] Key value pairs (`key=value`)
-- [ ] Sections `[section]`
-- [ ] Number values
-- [ ] Nested / sub sections
+A totally useless non-spec-compliant INI parser written in C. Made for to try concepts for fun, not for use. Expect messy code, undefined behavior, and general poor practices.
 
 
+⚠️ Warning: This is a playground project. It might work, it might not. Definitely don’t use it.
